@@ -34,6 +34,11 @@ evaporation data, not thermal diffusivity; cool-flame diameters and the two
 diameter ratios have distinct identities; watts are not treated as radiance;
 and gas-composition basis is not assumed to be mole fraction.
 
+File ingestion uses a Strategy/Registry boundary (`FileParser` and
+`ParserRegistry`). The MVP registers only `CSVParser`; unsupported formats
+return HTTP 415. A future format can add its own parser strategy and register
+it without changing the CSV normalizer or gathering logic.
+
 ## Tests
 
 ```powershell

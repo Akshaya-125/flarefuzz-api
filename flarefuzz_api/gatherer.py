@@ -3,14 +3,17 @@ from __future__ import annotations
 import re
 from json import JSONDecodeError
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
-import pandas as pd
-import pint
 
-from flarefuzz_api.models import DatasetMetadata, GatheredInventory
-from flarefuzz_api.normalizer import inventory_csv
+from flarefuzz_api.models import DatasetMetadata, GatheredInventory, InventoryResponse
+from flarefuzz_api.parsers import (
+    DEFAULT_PARSER_REGISTRY,
+    ParserContext,
+    UnsupportedFileTypeError,
+)
 
 SEARCH_URL = "https://psi.nasa.gov/geode-py/ws/repo/search"
 INVESTIGATION_DATA_URL = "https://psi.nasa.gov/geode-py/ws/repo/investigations"
@@ -128,45 +131,51 @@ async def gather_csv_inventories(
                 resource.raise_for_status()
                 content_type = resource.headers.get("content-type", "").lower()
                 disposition = resource.headers.get("content-disposition", "").lower()
-                path = resource_url.lower().split("?", 1)[0]
-                is_csv = (
-                    "csv" in content_type
-                    or path.endswith(".csv")
-                    or ".csv" in disposition
+                disposition_name = re.search(r'filename="?([^";]+)', disposition)
+                filename = (
+                    disposition_name.group(1).strip()
+                    if disposition_name
+                    else Path(urlparse(resource_url).path).name
                 )
-                if is_csv:
-                    try:
-                        inventory, _ = inventory_csv(
-                            resource.content,
-                            DatasetMetadata(
-                                provenance="unknown",
-                                source_url=str(resource.url),
-                            ),
+                context = ParserContext(
+                    filename=filename,
+                    media_type=content_type,
+                    metadata=DatasetMetadata(
+                        provenance="unknown",
+                        source_url=str(resource.url),
+                    ),
+                )
+                try:
+                    parsed = DEFAULT_PARSER_REGISTRY.parse(resource.content, context)
+                except UnsupportedFileTypeError:
+                    if depth < _MAX_LINK_DEPTH and "json" in content_type:
+                        try:
+                            linked_json = resource.json()
+                        except (ValueError, JSONDecodeError) as exc:
+                            raise GathererError(
+                                f"Invalid NASA PSI JSON resource at {resource.url}."
+                            ) from exc
+                        queue.extend(
+                            (url, depth + 1)
+                            for url in _links(linked_json, str(resource.url))
                         )
-                    except (
-                        ValueError,
-                        UnicodeDecodeError,
-                        pd.errors.EmptyDataError,
-                        pd.errors.ParserError,
-                        pint.errors.PintError,
-                    ) as exc:
-                        raise GathererError(f"Could not parse NASA PSI CSV at {resource.url}: {exc}") from exc
+                    continue
+                except (ValueError, UnicodeDecodeError) as exc:
+                    raise GathererError(f"Could not parse NASA PSI CSV at {resource.url}: {exc}") from exc
+                else:
                     results.append(
                         GatheredInventory(
                             project_title=str(title) if title else None,
                             project_id=project_id or None,
                             resource_url=str(resource.url),
-                            inventory=inventory,
+                            inventory=InventoryResponse(
+                                metadata=parsed.metadata,
+                                parameters=parsed.parameters,
+                            ),
                         )
                     )
                     if len(results) >= max_resources:
                         return results
-                elif depth < _MAX_LINK_DEPTH and "json" in content_type:
-                    try:
-                        linked_json = resource.json()
-                    except (ValueError, JSONDecodeError) as exc:
-                        raise GathererError(f"Invalid NASA PSI JSON resource at {resource.url}.") from exc
-                    queue.extend((url, depth + 1) for url in _links(linked_json, str(resource.url)))
         if not results:
             raise GathererError(
                 f"NASA PSI returned {len(_records(search_json))} search records but no accessible "

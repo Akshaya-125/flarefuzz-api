@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from httpx import HTTPError
-import pandas as pd
 from pydantic import ValidationError
 
 from flarefuzz_api.gatherer import GathererError, gather_csv_inventories
@@ -12,7 +11,11 @@ from flarefuzz_api.models import (
     NormalizedCSVResponse,
     Provenance,
 )
-from flarefuzz_api.normalizer import inventory_csv, normalized_csv_response
+from flarefuzz_api.parsers import (
+    DEFAULT_PARSER_REGISTRY,
+    ParserContext,
+    UnsupportedFileTypeError,
+)
 
 app = FastAPI(title="NASA PSI Combustion CSV Normalizer", version="0.1.0")
 
@@ -30,8 +33,6 @@ async def normalize_upload(
     simulation: str | None = Form(None),
     header_rows: int | None = Form(None, ge=1),
 ) -> NormalizedCSVResponse:
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=415, detail="Upload a .csv file.")
     try:
         metadata = DatasetMetadata(
             provenance=provenance,
@@ -39,13 +40,19 @@ async def normalize_upload(
             simulation=simulation,
             source_url=None,
         )
-        inventory, data = inventory_csv(
+        options = {"header_rows": header_rows} if header_rows is not None else {}
+        return DEFAULT_PARSER_REGISTRY.parse(
             await file.read(),
-            metadata=metadata,
-            header_rows=header_rows,
+            ParserContext(
+                filename=file.filename,
+                media_type=file.content_type,
+                metadata=metadata,
+                options=options,
+            ),
         )
-        return normalized_csv_response(inventory, data)
-    except (ValueError, ValidationError, pd.errors.EmptyDataError, pd.errors.ParserError) as exc:
+    except UnsupportedFileTypeError as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except (ValueError, ValidationError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
