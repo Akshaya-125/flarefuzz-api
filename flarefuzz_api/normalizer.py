@@ -250,37 +250,34 @@ def _guess_header_row_count(
     rows: list[list[str]],
     max_header_rows: int = 5,
 ) -> int:
-    """Detect an optional second header row without consuming blank data rows."""
+    """Detect grouped headers, including headers with recognized first-row labels."""
 
     if not rows:
         return 1
 
-    # If the first row already contains a recognized parameter,
-    # it is a complete header by itself.
-    first_headers = _make_headers([rows[0]])
-
-    if any(
-        _parameter_identity(header)[0] is not None
-        for header in first_headers
-    ):
+    if len(rows) < 2 or max_header_rows < 2:
         return 1
 
-    # Only inspect the immediately following row for a second header.
-    # Blank rows and unrecognized text remain measurement data.
-    if len(rows) > 1 and max_header_rows > 1:
-        second_row = rows[1]
+    second_row = rows[1]
 
-        if any(cell.strip() for cell in second_row):
-            second_headers = _make_headers([second_row])
+    if not any(cell.strip() for cell in second_row):
+        return 1
 
-            if any(
-                _parameter_identity(header)[0] is not None
-                for header in second_headers
-            ):
-                return 2
+    # A second row containing recognized parameter labels is header-like.
+    for cell in second_row:
+        canonical, _, _, _ = _parameter_identity(cell.strip())
+        if canonical is not None:
+            return 2
+
+        # Also recognize unit-only subheaders such as (mm) or (atm).
+        _, unit = _split_unit(cell.strip())
+        if (
+            unit is not None
+            and _normalized_unit(unit) in _UNIT_ALIASES
+        ):
+            return 2
 
     return 1
-
 
 def _is_number(value: str) -> bool:
     try:
@@ -464,6 +461,16 @@ def normalized_csv_response(
 
     for row_index, row in data.iterrows():
         for parameter in inventory.parameters:
+
+        # Skip categorical metadata and intentionally empty separator columns.
+            is_measurement = (
+                parameter.canonical_name is not None
+                or parameter.source_unit is not None
+            )
+
+            if not is_measurement:
+                continue
+
             raw_value = str(
                 row[parameter.series_identifier]
             ).strip()
@@ -471,15 +478,12 @@ def normalized_csv_response(
             if not raw_value:
                 issue_type = "missing_value"
                 message = "Measurement value is missing."
-
             else:
                 try:
                     numeric_value = float(raw_value)
-
                 except ValueError:
                     issue_type = "invalid_numeric"
                     message = "Measurement is not a valid number."
-
                 else:
                     if not isfinite(numeric_value):
                         issue_type = "non_finite"
@@ -496,6 +500,7 @@ def normalized_csv_response(
                     message=message,
                 )
             )
+        
 
     return NormalizedCSVResponse(
         metadata=inventory.metadata,
