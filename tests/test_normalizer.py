@@ -91,3 +91,54 @@ def test_source_and_si_data_are_both_available():
     response = normalized_csv_response(inventory, data)
     assert response.source_values == [{"flame_diameter#1": "12"}]
     assert response.si_values == [{"flame_diameter#1": pytest.approx(0.012)}]
+def test_missing_measurement_is_reported():
+    inventory, data = inventory_csv(
+        b"Flame diameter (mm)\n\n12\n"
+    )
+
+    print("\n--- DEBUG ---")
+    print("Inventory parameters:", inventory.parameters)
+    print("DataFrame:")
+    print(data)
+    print("DataFrame shape:", data.shape)
+    print("DataFrame values:", data.values.tolist())
+    print("SI values:", data.attrs.get("si_values"))
+
+    response = normalized_csv_response(inventory, data)
+
+    print("Validation issues:", response.validation_issues)
+
+    assert any(
+        issue.issue_type == "missing_value"
+        for issue in response.validation_issues
+    )
+
+
+def test_invalid_numeric_measurement_is_reported():
+    inventory, data = inventory_csv(
+        b"Flame diameter (mm)\nabc\n"
+    )
+
+    response = normalized_csv_response(inventory, data)
+
+    assert response.validation_issues[0].issue_type == "invalid_numeric"
+
+
+def test_infinite_measurement_is_reported():
+    inventory, data = inventory_csv(
+        b"Flame diameter (mm)\ninf\n"
+    )
+
+    response = normalized_csv_response(inventory, data)
+
+    assert response.validation_issues[0].issue_type == "non_finite"
+
+
+def test_valid_measurement_has_no_validation_issues():
+    inventory, data = inventory_csv(
+        b"Flame diameter (mm)\n12\n"
+    )
+
+    response = normalized_csv_response(inventory, data)
+
+    assert response.validation_issues == []
